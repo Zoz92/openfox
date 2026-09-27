@@ -7,7 +7,53 @@ import {
   hasPendingQuestion,
   provideAnswer,
   getPendingQuestionsForSession,
+  isSessionAwaitingAnswer,
+  onAwaitingAnswerChange,
 } from './ask.js'
+
+async function ask(sessionId: string, toolCallId: string): Promise<void> {
+  try {
+    await askUserTool.execute(
+      { question: 'Q?' },
+      { workdir: '/tmp/project', sessionId, sessionManager: {} as never, toolCallId },
+    )
+  } catch {
+    // AskUserInterrupt expected
+  }
+}
+
+describe('awaiting-answer notifications', () => {
+  it('notifies only on transitions of a session awaiting state', async () => {
+    const changes: Array<[string, boolean]> = []
+    const unsubscribe = onAwaitingAnswerChange((sessionId, awaiting) => changes.push([sessionId, awaiting]))
+
+    await ask('s-await', 'c-await-1')
+    await ask('s-await', 'c-await-2')
+    expect(isSessionAwaitingAnswer('s-await')).toBe(true)
+    provideAnswer('c-await-1', 'x')
+    expect(isSessionAwaitingAnswer('s-await')).toBe(true)
+    cancelQuestion('c-await-2', 'stop')
+    expect(isSessionAwaitingAnswer('s-await')).toBe(false)
+
+    await ask('s-await', 'c-await-3')
+    cancelQuestionsForSession('s-await', 'deleted')
+
+    unsubscribe()
+    await ask('s-await', 'c-await-4')
+    provideAnswer('c-await-4', 'x')
+
+    expect(changes).toEqual([
+      ['s-await', true],
+      ['s-await', false],
+      ['s-await', true],
+      ['s-await', false],
+    ])
+  })
+
+  it('reports false for a session with no pending question', () => {
+    expect(isSessionAwaitingAnswer('never-asked')).toBe(false)
+  })
+})
 
 describe('ask_user tool', () => {
   it('throws an AskUserInterrupt and tracks the pending question', async () => {

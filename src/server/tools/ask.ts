@@ -18,6 +18,39 @@ const pendingQuestions = new Map<
   }
 >()
 
+type AwaitingAnswerListener = (sessionId: string, awaiting: boolean) => void
+const awaitingAnswerListeners = new Set<AwaitingAnswerListener>()
+
+export function isSessionAwaitingAnswer(sessionId: string): boolean {
+  for (const pending of pendingQuestions.values()) {
+    if (pending.sessionId === sessionId) return true
+  }
+  return false
+}
+
+export function onAwaitingAnswerChange(listener: AwaitingAnswerListener): () => void {
+  awaitingAnswerListeners.add(listener)
+  return () => {
+    awaitingAnswerListeners.delete(listener)
+  }
+}
+
+function trackAwaitingTransition<T>(sessionId: string, mutate: () => T): T {
+  const before = isSessionAwaitingAnswer(sessionId)
+  const result = mutate()
+  const after = isSessionAwaitingAnswer(sessionId)
+  if (before !== after) {
+    for (const listener of awaitingAnswerListeners) {
+      try {
+        listener(sessionId, after)
+      } catch {
+        // a failing listener must not break question handling
+      }
+    }
+  }
+  return result
+}
+
 export const askUserTool: Tool = {
   name: 'ask_user',
   definition: {
@@ -68,15 +101,17 @@ export const askUserTool: Tool = {
     const deferred = createDeferred<string>()
     void deferred.promise.catch(() => {})
 
-    pendingQuestions.set(callId, {
-      promise: deferred.promise,
-      resolve: deferred.resolve,
-      reject: deferred.reject,
-      sessionId: context.sessionId,
-      question,
-      type,
-      options,
-    })
+    trackAwaitingTransition(context.sessionId, () =>
+      pendingQuestions.set(callId, {
+        promise: deferred.promise,
+        resolve: deferred.resolve,
+        reject: deferred.reject,
+        sessionId: context.sessionId,
+        question,
+        type,
+        options,
+      }),
+    )
 
     throw new AskUserInterrupt(callId, question, type, options)
   },
@@ -101,7 +136,7 @@ export function provideAnswer(callId: string, answer: string, skip?: boolean): b
   }
 
   pending.resolve(skip ? '[user skipped]' : answer)
-  pendingQuestions.delete(callId)
+  trackAwaitingTransition(pending.sessionId, () => pendingQuestions.delete(callId))
   return true
 }
 
@@ -112,24 +147,26 @@ export function cancelQuestion(callId: string, reason: string): boolean {
   }
 
   pending.reject(new Error(reason))
-  pendingQuestions.delete(callId)
+  trackAwaitingTransition(pending.sessionId, () => pendingQuestions.delete(callId))
   return true
 }
 
 export function cancelQuestionsForSession(sessionId: string, reason: string): number {
-  let cancelledCount = 0
+  return trackAwaitingTransition(sessionId, () => {
+    let cancelledCount = 0
 
-  for (const [callId, pending] of pendingQuestions.entries()) {
-    if (pending.sessionId !== sessionId) {
-      continue
+    for (const [callId, pending] of pendingQuestions.entries()) {
+      if (pending.sessionId !== sessionId) {
+        continue
+      }
+
+      pending.reject(new Error(reason))
+      pendingQuestions.delete(callId)
+      cancelledCount += 1
     }
 
-    pending.reject(new Error(reason))
-    pendingQuestions.delete(callId)
-    cancelledCount += 1
-  }
-
-  return cancelledCount
+    return cancelledCount
+  })
 }
 
 export function hasPendingQuestion(callId: string): boolean {
