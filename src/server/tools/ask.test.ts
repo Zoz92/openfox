@@ -53,6 +53,24 @@ describe('awaiting-answer notifications', () => {
   it('reports false for a session with no pending question', () => {
     expect(isSessionAwaitingAnswer('never-asked')).toBe(false)
   })
+
+  it('keeps the per-session count exact when a call id is asked twice', async () => {
+    await ask('s-dup', 'c-dup-1')
+    await ask('s-dup', 'c-dup-1')
+    expect(getPendingQuestionsForSession('s-dup')).toHaveLength(1)
+    provideAnswer('c-dup-1', 'x')
+    expect(isSessionAwaitingAnswer('s-dup')).toBe(false)
+  })
+
+  it('is independent across sessions', async () => {
+    await ask('s-a', 'c-a-1')
+    await ask('s-b', 'c-b-1')
+    cancelQuestionsForSession('s-a', 'deleted')
+    expect(isSessionAwaitingAnswer('s-a')).toBe(false)
+    expect(isSessionAwaitingAnswer('s-b')).toBe(true)
+    provideAnswer('c-b-1', 'x')
+    expect(isSessionAwaitingAnswer('s-b')).toBe(false)
+  })
 })
 
 describe('ask_user tool', () => {
